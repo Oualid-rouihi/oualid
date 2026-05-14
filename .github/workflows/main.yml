@@ -1,65 +1,116 @@
-name: github rdp tailscale edition
+name: Windows RDP via Tailscale
+
 on:
   workflow_dispatch:
     inputs:
       password:
-        description: 'set rdp password'
+        description: 'Set RDP Password'
         required: true
-        default: 'Atay@Bna3na3#2026'
 
 jobs:
-  build:
+  rdp:
     runs-on: windows-latest
+    timeout-minutes: 360
+
     steps:
-      - name: initializing environment
-        run: echo "starting server deployment..."
-
-      - name: installing tailscale
+      - name: Initializing
         run: |
-          echo "downloading tailscale..."
-          invoke-webrequest -uri 'https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe' -outfile 'tailscale.exe'
-          start-process -filepath "tailscale.exe" -argumentlist "/quiet" -wait
-          echo "waiting for service..."
-          start-sleep -seconds 15
-          echo "tailscale setup complete."
+          echo "Starting Windows cloud machine..."
 
-      - name: authenticating tailscale
+      - name: Install Tailscale
         run: |
-          echo "linking to tailscale network..."
-          & "c:\program files\tailscale\tailscale.exe" up --authkey=${{ secrets.TS_KEY }} --hostname=cloud-rdp-server --accept-routes
-          echo "authentication successful."
-
-      - name: disabling password policy
-        run: |
-          echo "killing windows password complexity requirements..."
-          secedit /export /cfg config.inf
-          (get-content config.inf) -replace 'PasswordComplexity = 1', 'PasswordComplexity = 0' | set-content config.inf
-          secedit /configure /db $env:temp\temp.sdb /cfg config.inf /areas SECURITYPOLICY
-          echo "policy disabled."
-
-      - name: configuring remote desktop
-        run: |
-          echo "setting up user credentials..."
-          net user runneradmin "${{ github.event.inputs.password }}" /y
+          echo "Downloading Tailscale..."
           
-          echo "configuring registry and firewall..."
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 1
-          
-          echo "rdp protocol enabled."
-          exit 0
+          Invoke-WebRequest `
+            -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" `
+            -OutFile "tailscale.exe"
 
-      - name: maintaining connection
+          echo "Installing..."
+          
+          Start-Process `
+            -FilePath ".\tailscale.exe" `
+            -ArgumentList "/quiet" `
+            -Wait
+
+          Start-Sleep -Seconds 15
+
+          echo "Tailscale installed."
+
+      - name: Connect to Tailscale
         run: |
-          echo "=========================================="
-          echo "server is live"
-          echo "username: runneradmin"
-          echo "password: ${{ github.event.inputs.password }}"
-          echo "internal ip address:"
-          & "c:\program files\tailscale\tailscale.exe" ip -4
-          echo "=========================================="
+          echo "Connecting to Tailscale network..."
+
+          & "C:\Program Files\Tailscale\tailscale.exe" up `
+            --authkey=${{ secrets.TS_KEY }} `
+            --hostname=cloud-rdp-${{ github.run_id }} `
+            --accept-routes
+
+          echo "Connected successfully."
+
+          echo "Tailscale IP:"
+          & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+
+      - name: Configure Windows RDP
+        run: |
+          echo "Setting password..."
+
+          net user runneradmin "${{ github.event.inputs.password }}"
+
+          echo "Enabling Remote Desktop..."
+
+          Set-ItemProperty `
+            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+            -Name "fDenyTSConnections" `
+            -Value 0
+
+          echo "Disabling NLA..."
+
+          Set-ItemProperty `
+            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name "UserAuthentication" `
+            -Value 0
+
+          echo "Enabling firewall rules..."
+
+          Enable-NetFirewallRule `
+            -DisplayGroup "Remote Desktop"
+
+          echo "Starting RDP service..."
+
+          Start-Service TermService
+
+          Set-Service `
+            -Name TermService `
+            -StartupType Automatic
+
+          echo "Checking service status..."
+
+          Get-Service TermService
+
+      - name: Display Connection Info
+        run: |
+          echo "====================================="
+          echo "RDP SERVER READY"
+          echo "====================================="
+          echo "USERNAME: runneradmin"
+          echo "PASSWORD: ${{ github.event.inputs.password }}"
+          echo ""
+          echo "Tailscale IPv4:"
+          & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+          echo "====================================="
+
+      - name: Keep Runner Alive
+        run: |
+          echo "Keeping machine online..."
+
           while ($true) {
-            echo "keep-alive: $(get-date)"
-            start-sleep -seconds 300
+            echo "Alive: $(Get-Date)"
+            Start-Sleep -Seconds 300
           }
+
+      - name: Cleanup
+        if: always()
+        run: |
+          echo "Disconnecting Tailscale..."
+
+          & "C:\Program Files\Tailscale\tailscale.exe" down
